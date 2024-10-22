@@ -109,6 +109,7 @@ static const char* TAG = "cpu_start";
 struct object { long placeholder[ 10 ]; };
 void __register_frame_info (const void *begin, struct object *ob);
 extern char __eh_frame[];
+extern void fm_check_lock_sr(uint8_t);
 
 //If CONFIG_SPIRAM_IGNORE_NOTFOUND is set and external RAM is not found or errors out on testing, this is set to false.
 static bool s_spiram_okay=true;
@@ -211,6 +212,8 @@ void IRAM_ATTR call_start_cpu0()
     DPORT_CLEAR_PERI_REG_MASK(DPORT_APPCPU_CTRL_B_REG, DPORT_APPCPU_CLKGATE_EN);
 #endif
 
+    /* Check and run FM startup flow */
+    fm_check_lock_sr(true);
 
 #if CONFIG_SPIRAM_MEMTEST
     if (s_spiram_okay) {
@@ -287,6 +290,7 @@ void start_cpu0_default(void)
 {
     esp_err_t err;
     esp_setup_syscall_table();
+    printf("Test\n");
 
     if (s_spiram_okay) {
 #if CONFIG_SPIRAM_BOOT_INIT && (CONFIG_SPIRAM_USE_CAPS_ALLOC || CONFIG_SPIRAM_USE_MALLOC)

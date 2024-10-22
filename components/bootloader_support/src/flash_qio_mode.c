@@ -37,6 +37,15 @@
 #define CMD_RDSR2      0x35 /* Not all SPI flash uses this command */
 #define CMD_OTPEN      0x3A /* Enable OTP mode, not all SPI flash uses this command */
 
+#define CMD_RDSFDP     0x5A /* Read the SFDP of the flash */
+#define CMD_VSR_WREN   0x50
+
+#define SR_SRP1_BIT     BIT8
+#define SR_SRP0_BIT     BIT7
+
+#define BYTESHIFT(VAR, IDX)    (((VAR) >> ((IDX) * 8)) & 0xFF)
+#define IS_FM(flash_id)        (((flash_id) & 0xFF0000) == 0xa10000)
+
 static const char *TAG = "qio_mode";
 
 typedef unsigned (*read_status_fn_t)();
@@ -121,7 +130,7 @@ static uint32_t execute_flash_command(uint8_t command, uint32_t mosi_data, uint8
 
 /* dummy_len_plus values defined in ROM for SPI flash configuration */
 extern uint8_t g_rom_spiflash_dummy_len_plus[];
-uint32_t bootloader_read_flash_id()
+uint32_t IRAM_ATTR bootloader_read_flash_id()
 {
     uint32_t id = execute_flash_command(CMD_RDID, 0, 0, 24);
     id = ((id & 0xff) << 16) | ((id >> 16) & 0xff) | (id & 0xff00);
@@ -304,4 +313,79 @@ static uint32_t execute_flash_command(uint8_t command, uint32_t mosi_data, uint8
 
     SPIFLASH.ctrl.val = old_ctrl_reg;
     return SPIFLASH.data_buf[0];
+}
+
+void IRAM_ATTR fm_lock_sr(uint32_t good_value, uint8_t permanent)
+{
+    bool skip = false;
+    const uint8_t cmd_wren = (permanent? CMD_WREN: CMD_VSR_WREN);
+    uint8_t sr1_after;
+    uint8_t sr2_after;
+
+    //SRP0 and SRP1 will be handled by this function. Remove the user-specified bits.
+    good_value &= ~(SR_SRP0_BIT | SR_SRP1_BIT | 0xFFFF0000);
+
+    uint32_t sr12_set = (good_value & 0xFFFF) | SR_SRP1_BIT;
+    if (permanent) {
+        sr12_set |= SR_SRP0_BIT;
+    }
+
+    esp_rom_spiflash_wait_idle(&g_rom_flashchip);
+    uint8_t sr1_before = read_status_8b_rdsr();
+    uint8_t sr2_before = read_status_8b_rdsr2();
+
+    sr1_after = sr1_before;
+    sr2_after = sr2_before;
+
+    uint32_t sr12_before = (sr2_before << 8) | sr1_before;
+    //When SRP1 is already set, the SR is already protected (permanently/power-cycle) and cannot be modified anymore.
+   if (sr12_before & SR_SRP1_BIT) {
+       skip = true;
+   }
+
+    bool status_written = false;
+
+   //Write SRP1, 0 and good value bits at same time.
+   if (!skip && sr12_set != sr12_before) {
+        execute_flash_command(cmd_wren, 0, 0, 0);
+        write_status_16b_wrsr(sr12_set);
+        status_written = true;
+
+        esp_rom_spiflash_wait_idle(&g_rom_flashchip);
+        sr2_after = read_status_8b_rdsr2();
+        sr1_after = read_status_8b_rdsr();
+    }
+
+    //If status bits are written, WRDI is requried to avoid WEL left ON.
+    if (status_written) {
+        execute_flash_command(CMD_WRDI, 0, 0, 0);
+    }
+
+    if (skip) {
+        ESP_EARLY_LOGI(TAG, "SRP1 already set (%02X%02X), skip SR lock.", sr2_before, sr1_before);
+    } else {
+        if (permanent) {
+            ESP_EARLY_LOGI(TAG, "Try lock SR permanently.");
+        } else {
+            ESP_EARLY_LOGI(TAG, "Try lock SR until power cycle.");
+        }
+        ESP_EARLY_LOGI(TAG, "New SR1: %x, SR2: %x", sr1_after, sr2_after);
+    }
+}
+
+void fm_check_lock_sr(uint8_t permanent)
+{
+    //These IDs are used to identify FM flash chips with SR lock issue.
+    uint32_t flash_id = bootloader_read_flash_id();
+    ESP_EARLY_LOGI(TAG, "Flash id: %x", flash_id);
+
+    if (!IS_FM(flash_id)) {
+        ESP_EARLY_LOGI(TAG, "non-fm %x SR lock skipped.", flash_id);
+        return;
+    }
+
+    //See the header for the meaning for the value
+    uint32_t good_value = 0x200;
+
+    fm_lock_sr(good_value, permanent);
 }

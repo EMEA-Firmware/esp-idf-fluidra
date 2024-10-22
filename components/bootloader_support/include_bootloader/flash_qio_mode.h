@@ -32,6 +32,11 @@ void bootloader_enable_qio_mode(void);
  */
 uint32_t bootloader_read_flash_id();
 
+/**
+ * @brief FM startup flow. Call at startup before any erase/write operation.
+ */
+void fm_check_lock_sr(uint8_t permanent);
+
 #ifdef __cplusplus
 }
 #endif
